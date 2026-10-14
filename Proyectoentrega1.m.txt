@@ -1,0 +1,640 @@
+clear; close all; clc;
+
+
+% =========================
+% 1. RUTA BASE
+% =========================
+basePath = "C:\Users\juanp\Downloads\CBIS-DDSM";
+
+% =========================
+% 2. CSV + DICOM
+% =========================
+calc_info  = readtable(fullfile(basePath,"csv","calc_case_description_train_set.csv"));
+dicom_info = readtable(fullfile(basePath,"csv","dicom_info.csv"));
+
+calc_info.imageFilePath = string(calc_info.imageFilePath);
+calc_info.calcType      = string(calc_info.calcType);
+calc_info.ROIPath       = string(calc_info.ROIMaskFilePath);
+
+dicom_info.PatientID  = string(dicom_info.PatientID);
+dicom_info.image_path = string(dicom_info.image_path);
+
+% =========================
+% 3. EXTRAER PatientID
+% =========================
+calc_info.PatientID = extractBefore(calc_info.imageFilePath, "/");
+
+dicom_info.image_path = erase(dicom_info.image_path,"CBIS-DDSM/jpeg/");
+
+% =========================
+% 4. JOIN (SOLO IMAGEN)
+% =========================
+joined = innerjoin(dicom_info, calc_info, "Keys","PatientID");
+
+% FILTRO
+joined = joined(string(joined.abnormalityType) == "calcification", :);
+
+% =========================
+% 5. LABELS
+% =========================
+labels = strings(height(joined),1);
+
+for i = 1:height(joined)
+    calcType = upper(string(joined.calcType(i)));
+
+    if strlength(calcType) == 0
+        labels(i) = "UNKNOWN";
+    else
+        parts = split(calcType,"-");
+        labels(i) = parts(1);
+    end
+end
+
+labels = categorical(labels);
+
+% =========================
+% 6. PATHS CORRECTOS
+% =========================
+imagePaths = fullfile(basePath,"jpeg", joined.image_path);
+
+%% =========================
+% 7. ROI REAL (DICOM)
+% =========================
+roiPaths = strings(height(joined),1);
+
+for i = 1:height(joined)
+    roiID = extractBefore(joined.ROIPath(i), "/");
+    rowROI = dicom_info(dicom_info.PatientID == roiID, :);
+
+    if ~isempty(rowROI)
+        roiPaths(i) = fullfile(basePath,"jpeg", ...
+            erase(string(rowROI.image_path(1)),"CBIS-DDSM/jpeg/"));
+    else
+        roiPaths(i) = "";
+    end
+end
+
+disp("Total datos iniciales:");
+disp(numel(labels));
+
+
+%% =========================
+% 8. FILTRO CLASES
+% =========================
+cats = categories(labels);
+counts = countcats(labels);
+
+
+validClasses = cats(counts >= 100);
+
+idx = ismember(labels, validClasses);
+
+imagePaths = imagePaths(idx);
+roiPaths   = roiPaths(idx);
+labels     = labels(idx);
+
+labels = removecats(labels);
+globalClasses = categories(labels);
+
+disp("Distribución ORIGINAL de clases:");
+disp(table(categories(labels), countcats(labels)));
+
+%% =========================
+% BALANCEO PARCIAL
+% =========================
+
+targetPleomorphic = 150;
+
+idxFinal = [];
+
+cats = categories(labels);
+
+for i = 1:numel(cats)
+
+    idxClass = find(labels == cats{i});
+
+    if strcmp(cats{i},"PLEOMORPHIC")
+
+        idxClass = idxClass( ...
+            randperm(numel(idxClass), ...
+            targetPleomorphic));
+
+    end
+
+    idxFinal = [idxFinal; idxClass];
+
+end
+
+% Reordenar aleatoriamente
+idxFinal = idxFinal(randperm(length(idxFinal)));
+
+% Aplicar selección
+imagePaths = imagePaths(idxFinal);
+roiPaths   = roiPaths(idxFinal);
+labels     = labels(idxFinal);
+
+disp("Clases finales balanceadas:");
+disp(table(categories(labels),countcats(labels)));
+
+
+%% =========================
+% 🔥 PREPROCESAMIENTO TOTAL (ACELERACIÓN)
+% =========================
+
+numData = numel(imagePaths);
+
+X = zeros(224,224,3,numData,'single');
+
+for i = 1:numData
+    try
+        X(:,:,:,i) = preprocessMammoROI(imagePaths(i), roiPaths(i));
+    catch
+        X(:,:,:,i) = zeros(224,224,3,'single');
+    end
+
+    if mod(i,200)==0
+        fprintf("Procesadas: %d / %d\n", i, numData);
+    end
+
+    if mod(i,200)==0 || i == numData
+    fprintf("Procesadas: %d / %d\n", i, numData);
+    end
+end
+
+save("dataset_preprocesado.mat",...
+    "X","labels","-v7.3");
+
+%% =========================
+% 10. SPLIT
+% =========================
+cv = cvpartition(labels,'HoldOut',0.2);
+
+trainIdx = training(cv);
+testIdx  = test(cv);
+
+XTrain = X(:,:,:,trainIdx);
+XTest  = X(:,:,:,testIdx);
+
+YTrain = labels(trainIdx);
+YTest  = labels(testIdx);
+
+trainLbl = labels(trainIdx);
+
+testImg  = imagePaths(testIdx);
+testROI  = roiPaths(testIdx);
+testLbl  = labels(testIdx);
+
+
+%% =========================
+% DATA AUGMENTATION
+% =========================
+
+imageAugmenter = imageDataAugmenter( ...
+    'RandXReflection',true,...
+    'RandRotation',[-10 10],...
+    'RandXTranslation',[-10 10],...
+    'RandYTranslation',[-10 10],...
+    'RandXScale',[0.95 1.05],...
+    'RandYScale',[0.95 1.05]);
+
+augimdsTrain = augmentedImageDatastore([224 224], XTrain, YTrain, ...
+    'DataAugmentation', imageAugmenter);
+
+% ❗ Test SIN augmentación
+augimdsTest = augmentedImageDatastore([224 224], XTest, YTest);
+
+%% =========================
+% 13. RESNET18 CON MEJORAS (DROPOUT)
+% =========================
+net = resnet18;
+lgraph = layerGraph(net);
+
+numClasses = numel(categories(trainLbl));
+
+% Añadimos capas nuevas incluyendo Dropout (50%) para reducir Overfitting
+newLayers = [
+    dropoutLayer(0.3, 'Name', 'new_dropout') %Dropout más pequeño, de 0.5 a 0.2
+    fullyConnectedLayer(numClasses, 'Name', 'new_fc', 'WeightLearnRateFactor', 10, 'BiasLearnRateFactor', 10)
+    softmaxLayer('Name', 'new_prob')
+    classificationLayer('Name', 'new_classoutput')
+];
+
+% Removemos las capas originales finales
+lgraph = removeLayers(lgraph, {'fc1000', 'prob', 'ClassificationLayer_predictions'});
+
+% Añadimos y conectamos las nuevas
+lgraph = addLayers(lgraph, newLayers);
+lgraph = connectLayers(lgraph, 'pool5', 'new_dropout');
+
+%% resnet50
+
+net = densenet201;
+
+lgraph = layerGraph(net);
+
+numClasses = numel(categories(trainLbl));
+
+newLayers = [
+
+    dropoutLayer(0.3,'Name','new_dropout')
+
+    fullyConnectedLayer( ...
+    numClasses,...
+    'Name','new_fc',...
+    'WeightLearnRateFactor',10,...
+    'BiasLearnRateFactor',10)
+
+    softmaxLayer('Name','new_prob')
+
+    classificationLayer('Name','new_classoutput')
+];
+
+lgraph = removeLayers(lgraph,...
+{'fc1000',...
+ 'fc1000_softmax',...
+ 'ClassificationLayer_fc1000'});
+
+lgraph = addLayers(lgraph,newLayers);
+
+lgraph = connectLayers(lgraph,...
+'avg_pool',...
+'new_dropout');
+
+%% ========================= augimdsTest, ...
+% 14. TRAIN (CON EARLY STOPPING CORREGIDO)
+% =========================
+options = trainingOptions("adam", ...
+    "InitialLearnRate", 1e-4, ...
+    "MaxEpochs", 40, ...
+    "MiniBatchSize", 32, ...
+    "Shuffle", "every-epoch", ...
+    "ValidationData", augimdsTest, ...
+    "ValidationFrequency", 10, ...
+    "ValidationPatience", 20, ...
+    "ExecutionEnvironment", "gpu", ...
+    "Verbose", true, ...
+    "Plots", "training-progress");
+
+[net,info] = trainNetwork(augimdsTrain, lgraph, options);
+
+classes = categories(trainLbl);
+save("prueba1", "net", "classes");
+
+
+%% cargar
+%load("modelo_resnet18_roi.matcheto.mat");
+
+%YPred = classify(net, augimdsTest);
+
+%% =========================
+% 15. EVALUACIÓN GENERAL
+% =========================
+YPred = classify(net, augimdsTest);
+YTrue = testLbl;
+
+figure;
+confusionchart(YTrue, YPred);
+title('Matriz de Confusión - Test Set');
+
+% =========================
+% 16. MÉTRICAS MÉDICAS FORMALES
+% =========================
+
+disp("==================================================");
+disp(" REPORTE DE MÉTRICAS MÉDICAS POR CLASE");
+disp("==================================================");
+
+% 1. Calcular la matriz de confusión numéricamente
+C = confusionmat(YTrue, YPred);
+numClasses = size(C, 1);
+nombresClases = string(categories(YTrue));
+
+% 2. Inicializar vectores
+Precision   = zeros(numClasses, 1);
+Recall      = zeros(numClasses, 1); % También llamado Sensibilidad
+Specificity = zeros(numClasses, 1);
+F1_Score    = zeros(numClasses, 1);
+
+% 3. Calcular iterativamente para cada clase
+for i = 1:numClasses
+    TP = C(i, i);
+    FP = sum(C(:, i)) - TP;
+    FN = sum(C(i, :)) - TP;
+    TN = sum(C(:)) - TP - FP - FN;
+    
+    % Precisión (Valor Predictivo Positivo)
+    if (TP + FP) == 0
+        Precision(i) = 0;
+    else
+        Precision(i) = TP / (TP + FP);
+    end
+    
+    % Sensibilidad / Recall
+    if (TP + FN) == 0
+        Recall(i) = 0;
+    else
+        Recall(i) = TP / (TP + FN);
+    end
+    
+    % Especificidad
+    if (TN + FP) == 0
+        Specificity(i) = 0;
+    else
+        Specificity(i) = TN / (TN + FP);
+    end
+    
+    % F1-Score
+    if (Precision(i) + Recall(i)) == 0
+        F1_Score(i) = 0;
+    else
+        F1_Score(i) = 2 * (Precision(i) * Recall(i)) / (Precision(i) + Recall(i));
+    end
+end
+
+% 4. Crear y mostrar la tabla de resultados
+Clase = nombresClases;
+Precision_Pct = round(Precision * 100, 2);
+Sensibilidad_Pct = round(Recall * 100, 2);
+Especificidad_Pct = round(Specificity * 100, 2);
+F1_Score_Pct = round(F1_Score * 100, 2);
+
+T_Resultados = table(Clase, Precision_Pct, Sensibilidad_Pct, Especificidad_Pct, F1_Score_Pct);
+disp(T_Resultados);
+
+% 5. Promedios Macro (Macro-Average)
+disp("--------------------------------------------------");
+fprintf("Precisión Promedio (Macro):    %.2f%%\n", mean(Precision_Pct));
+fprintf("Sensibilidad Promedio (Macro): %.2f%%\n", mean(Sensibilidad_Pct));
+fprintf("Especificidad Promedio (Macro):%.2f%%\n", mean(Especificidad_Pct));
+fprintf("F1-Score Promedio (Macro):     %.2f%%\n", mean(F1_Score_Pct));
+disp("==================================================");
+
+
+accuracy = sum(diag(C))/sum(C(:));
+
+
+precisionMacro = mean(Precision);
+recallMacro = mean(Recall);
+specificityMacro = mean(Specificity);
+f1Macro = mean(F1_Score);
+
+%% Guardar modelo completo
+
+save("modelo_densenet201_roi_mejorado.mat", ...
+     "net", ...
+     "classes", ...
+     "info", ...
+     "YTest", ...
+     "YPred", ...
+     "trainIdx", ...
+     "testIdx", ...
+     "C", ...
+     "accuracy", ...
+     "precisionMacro", ...
+     "recallMacro", ...
+     "specificityMacro", ...
+     "f1Macro");
+
+
+%% =========================
+% CASO GENERAL (USANDO CSV TEST REAL)
+% =========================
+
+%% =========================
+% CASO GENERAL CON REINTENTO AUTOMÁTICO
+%% =========================
+close all;
+% Leer CSV de test
+test_csv = readtable(fullfile(basePath,"csv","calc_case_description_test_set.csv"));
+
+test_csv.imageFilePath = string(test_csv.imageFilePath);
+test_csv.ROIPath       = string(test_csv.ROIMaskFilePath);
+
+Ntest = height(test_csv);
+
+found = false;
+
+while ~found
+
+    try
+        % 🔥 elegir aleatorio
+        idxRand = randi(Ntest);
+
+        imgPathDICOM_test = test_csv.imageFilePath(idxRand);
+        roiPathDICOM_test = test_csv.ROIPath(idxRand);
+
+        % =========================
+        % EXTRAER IDs
+        % =========================
+        imgID_test = extractBefore(imgPathDICOM_test, "/");
+        roiID_test = extractBefore(roiPathDICOM_test, "/");
+
+        % =========================
+        % BUSCAR EN dicom_info
+        % =========================
+        rowIMG = dicom_info(dicom_info.PatientID == imgID_test, :);
+        rowROI = dicom_info(dicom_info.PatientID == roiID_test, :);
+
+        % Si alguno no existe → intentar de nuevo
+        if isempty(rowIMG) || isempty(rowROI)
+            continue;
+        end
+
+        % =========================
+        % CONSTRUIR PATHS JPEG
+        % =========================
+        imgPathJPEG_test = fullfile(basePath,"jpeg", ...
+            erase(string(rowIMG.image_path(1)),"CBIS-DDSM/jpeg/"));
+
+        roiPathJPEG_test = fullfile(basePath,"jpeg", ...
+            erase(string(rowROI.image_path(1)),"CBIS-DDSM/jpeg/"));
+
+        % =========================
+        % VALIDAR QUE EXISTAN
+        % =========================
+        if ~isfile(imgPathJPEG_test) || ~isfile(roiPathJPEG_test)
+            continue;
+        end
+
+        % Si llegó aquí → todo OK
+        found = true;
+
+    catch
+        % cualquier error → reintentar
+        continue;
+    end
+
+end
+
+% =========================
+% MOSTRAR RESULTADO FINAL SELECCIONADO
+% =========================
+disp("Imagen válida encontrada:")
+disp(imgPathJPEG_test)
+
+disp("ROI válido encontrado:")
+disp(roiPathJPEG_test)
+
+% =========================
+% LEER IMAGEN ORIGINAL
+% =========================
+I_original = imread(imgPathJPEG_test);
+
+if size(I_original,3)==3
+    I_gray = rgb2gray(I_original);
+else
+    I_gray = I_original;
+end
+
+I_gray = imresize(I_gray,[224 224]);
+
+% =========================
+% LEER ROI REAL
+% =========================
+roi_real = imread(roiPathJPEG_test);
+
+if size(roi_real,3)==3
+    roi_real = rgb2gray(roi_real);
+end
+
+roi_real = imresize(roi_real,[224 224]);
+
+% =========================
+% PREPROCESAR PARA RED
+% =========================
+I_input = preprocessMammoROI(imgPathJPEG_test, roiPathJPEG_test);
+
+% =========================
+% PREDICCIÓN
+% =========================
+[labelPred_test, scores_test] = classify(net, I_input);
+[probMax_test, ~] = max(scores_test);
+
+fprintf("Predicción: %s (%.2f%%)\n", labelPred_test, probMax_test*100);
+
+% =========================
+% GRAD-CAM
+% =========================
+featureLayer = "res5b_relu";
+
+gradcamMap_test = gradCAM(net, I_input, labelPred_test, ...
+    'FeatureLayer', featureLayer);
+
+gradcamMap_test = imresize(gradcamMap_test,[224 224]);
+
+% =========================
+% =========================
+% VISUALIZACIÓN FINAL CON TEXTO
+% =========================
+figure;
+
+% 1. Imagen original
+subplot(1,2,1)
+imshow(I_gray,[])
+colormap gray
+title("Imagen original")
+
+% 2. ROI real
+subplot(1,2,2)
+imshow(roi_real,[])
+colormap gray
+title("ROI real")
+
+figure;
+% 3. Grad-CAM + PREDICCIÓN
+
+imshow(I_gray,[])
+hold on
+imagesc(gradcamMap_test,'AlphaData',0.5)
+colormap jet
+colorbar
+
+% 🔥 TEXTO CON CLASE + PROBABILIDAD
+titulo = sprintf("Pred: %s (%.2f%%)", ...
+    string(labelPred_test), probMax_test*100);
+
+title(titulo)
+
+
+
+
+
+
+
+
+
+%% =========================
+% FUNCIONES AUXILIARES
+% =========================
+
+% NUEVA FUNCIÓN: Aplica preprocesamiento Y transformaciones aleatorias
+function dataOut = readAndAugmentData(data, globalClasses)
+    % 1. Obtener la imagen base procesada
+    dataOut_temp = readData(data, globalClasses);
+    I = dataOut_temp{1};
+    label = dataOut_temp{2};
+
+    % 2. === AUMENTO DE DATOS ===
+    % Espejo horizontal (50% probabilidad)
+    if rand() > 0.5
+        I = fliplr(I);
+    end
+    
+    % Espejo vertical (50% probabilidad)
+    if rand() > 0.5
+        I = flipud(I);
+    end
+    
+    % Rotación en múltiplos de 90 grados aleatoria (0, 90, 180, 270)
+   % k = randi([0, 3]); 
+   % I = rot90(I, k);
+
+    % Devolver imagen aumentada
+    dataOut = {I, label};
+end
+
+% FUNCIÓN ORIGINAL DE LECTURA (Usada para el Test sin alteraciones)
+function dataOut = readData(data, globalClasses)
+    imgPath = data{1}{1};
+    roiPath = data{2}{1};
+    lbl = data{3}{1};
+
+    if ischar(lbl)
+        lbl = string(lbl);
+    end
+
+    label = categorical(lbl, globalClasses);
+    I = preprocessMammoROI(imgPath, roiPath);
+    dataOut = {I, label};
+end
+
+% FUNCIÓN DE PREPROCESAMIENTO DE IMAGEN
+function I = preprocessMammoROI(imgPath, roiPath)
+    try
+        % Leer imagen
+        I = imread(imgPath);
+        if size(I,3)==3
+            I = rgb2gray(I);
+        end
+        I = imresize(I,[224 224]);
+
+        % Leer ROI
+        roi = imread(roiPath);
+        if size(roi,3)==3
+            roi = rgb2gray(roi);
+        end
+        roi = imresize(roi,[224 224]);
+        roi = roi > 0;
+
+        % Atenuar fondo
+        I = im2double(I);
+        I(roi == 0) = I(roi == 0) * 0.3;   
+
+        % Normalización
+        I = adapthisteq(I);
+        I = im2single(I);
+        I = repmat(I,1,1,3); % ResNet18 requiere 3 canales
+    catch
+        I = zeros(224,224,3,'single');
+    end
+end

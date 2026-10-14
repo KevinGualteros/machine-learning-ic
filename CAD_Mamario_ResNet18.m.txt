@@ -1,0 +1,1126 @@
+    function CAD_Mamario_ResNet18
+    
+    clc;
+    close all;
+    
+    %% =====================================================
+    % CONFIGURACIÓN
+    %% =====================================================
+    
+    basePath = "C:\Users\juanp\Downloads\CBIS-DDSM";
+    
+    %% =====================================================
+    % CARGAR MODELO
+    %% =====================================================
+    
+    %load("modelo_resnet18_roi_mejorado.mat","net","classes");
+   load("modelo_resnet50_roi_mejorado.mat", ...
+    "net", ...
+    "classes", ...
+    "info", ...
+    "trainIdx", ...
+    "testIdx", ...
+    "C", ...
+    "accuracy", ...
+    "precisionMacro", ...
+    "recallMacro", ...
+    "specificityMacro", ...
+    "f1Macro");
+
+app.info = info;
+
+app.trainIdx = trainIdx;
+app.testIdx = testIdx;
+
+app.C = C;
+
+app.accuracy = accuracy;
+app.precisionMacro = precisionMacro;
+app.recallMacro = recallMacro;
+app.specificityMacro = specificityMacro;
+app.f1Macro = f1Macro; 
+
+    load("dataset_preprocesado.mat",...
+     "X","labels");
+
+    app.trainIdx = trainIdx;
+app.testIdx = testIdx;
+    
+    app.X = X;
+    app.labels = labels;
+    
+    
+    disp("Modelo cargado correctamente");
+    
+    %% =====================================================
+    % CARGAR CSV
+    %% =====================================================
+    
+    calc_test = readtable( ...
+    fullfile(basePath,...
+    "csv","calc_case_description_test_set.csv"));
+    
+    dicom_info = readtable( ...
+    fullfile(basePath,...
+    "csv","dicom_info.csv"));
+    
+    calc_test.imageFilePath = string(calc_test.imageFilePath);
+    calc_test.ROIPath       = string(calc_test.ROIMaskFilePath);
+    
+    dicom_info.PatientID = string(dicom_info.PatientID);
+    dicom_info.image_path = string(dicom_info.image_path);
+    
+    disp("CSV cargados correctamente");
+    
+   %% =====================================================
+% FIGURA PRINCIPAL
+%% =====================================================
+
+screen = get(0,'ScreenSize');
+
+fig = uifigure( ...
+'Name','CAD Mamario ResNet18', ...
+'Position',[20 20 1800 950]);
+
+fig.Color = [0.95 0.95 0.95];
+
+mainGrid = uigridlayout(fig,[3 3]);
+
+mainGrid.RowHeight = {90,'1x',320};
+
+mainGrid.ColumnWidth = {260,'1x',420};
+
+%% =====================================================
+% HEADER
+%% =====================================================
+
+header = uipanel(mainGrid);
+
+header.Layout.Row = 1;
+header.Layout.Column = [1 3];
+
+header.BackgroundColor = [1 1 1];
+
+titleLbl = uilabel(header);
+
+titleLbl.Text = ...
+"CAD Mamario Multimodelo + Grad-CAM";
+
+titleLbl.FontSize = 26;
+titleLbl.FontWeight = 'bold';
+
+titleLbl.Position = [20 35 800 40];
+
+statusLbl = uilabel(header);
+
+statusLbl.Text = ...
+"✓ Modelo ResNet18 cargado correctamente";
+
+app.statusLbl = statusLbl;
+
+statusLbl.FontSize = 14;
+
+statusLbl.FontColor = [0 0.5 0];
+
+statusLbl.Position = [25 10 300 20];
+
+%% =====================================================
+% PANEL IZQUIERDO
+%% =====================================================
+leftPanel.Scrollable = 'on';   % <-- activa scroll
+leftPanel = uipanel(mainGrid);
+
+leftPanel.Title = "Control del Sistema";
+
+leftPanel.Layout.Row = 2;
+leftPanel.Layout.Column = 1;
+
+leftPanel.Scrollable = 'on';   % <-- activa scroll
+
+leftGrid = uigridlayout(leftPanel,[2 1]);
+
+leftGrid.RowHeight = {190,'1x'};
+
+
+
+controlPanel = uipanel(leftGrid);
+controlPanel.Title = "";
+
+controlGrid = uigridlayout(controlPanel,[7 1]);
+
+controlGrid.RowHeight = {35,35,35,35,35,35,'1x'};
+
+
+
+btnCaso = uibutton(controlGrid,...
+'Text',"Generar Caso");
+
+btnCaso.FontSize = 10;
+
+
+btnResNet18 = uibutton(controlGrid,...
+'Text',"ResNet18");
+
+btnResNet50 = uibutton(controlGrid,...
+'Text',"ResNet50");
+
+btnDenseNet201 = uibutton(controlGrid,...
+'Text',"DenseNet201");
+
+btnResNet18.FontSize = 10;
+btnResNet50.FontSize = 10;
+btnDenseNet201.FontSize = 10;
+
+
+
+
+
+btnHistorial.FontSize = 14;
+leftPanel.Scrollable = 'on';   % <-- activa scroll
+%% =====================================================
+% PANEL RESULTADOS
+%% =====================================================
+leftPanel.Scrollable = 'on';   % <-- activa scroll
+resultPanel = uipanel(leftGrid);
+resultPanel.Title = "Resultado";
+
+resultGrid = uigridlayout(resultPanel,[9 1]);
+
+resultGrid.RowHeight = ...
+{15 15 15 15 35 35 35 35 35};
+
+lblClase = uilabel(resultGrid);
+lblClase.Text = "Diagnóstico: -";
+lblClase.FontSize = 12;
+lblClase.FontWeight = 'bold';
+
+lblConf = uilabel(resultGrid);
+lblConf.Text = "Confianza: -";
+lblConf.FontSize = 12;
+
+lblTiempo = uilabel(resultGrid);
+lblTiempo.Text = "Tiempo: -";
+lblTiempo.FontSize = 12;
+
+uilabel(resultGrid,'Text','');
+
+lblACC = uilabel(resultGrid);
+lblACC.Text = "ACC: --";
+lblACC.FontSize = 16;
+lblACC.FontWeight = 'bold';
+
+lblPRE = uilabel(resultGrid);
+lblPRE.Text = "PRE: --";
+lblPRE.FontSize = 16;
+lblPRE.FontWeight = 'bold';
+
+lblREC = uilabel(resultGrid);
+lblREC.Text = "REC: --";
+lblREC.FontSize = 16;
+lblREC.FontWeight = 'bold';
+
+lblESP = uilabel(resultGrid);
+lblESP.Text = "ESP: --";
+lblESP.FontSize = 16;
+lblESP.FontWeight = 'bold';
+
+lblF1 = uilabel(resultGrid);
+lblF1.Text = "F1: --";
+lblF1.FontSize = 16;
+lblF1.FontWeight = 'bold';
+
+%% =====================================================
+% PANEL CENTRAL
+%% =====================================================
+
+viewerPanel = uipanel(mainGrid);
+
+viewerPanel.Title = "Análisis Visual";
+
+viewerPanel.Layout.Row = 2;
+viewerPanel.Layout.Column = 2;
+
+viewerGrid = uigridlayout(viewerPanel,[2 3]);
+
+viewerGrid.RowHeight = {25,'1x'};
+
+lbl1 = uilabel(viewerGrid);
+lbl1.Text = "Mamografía";
+lbl1.FontWeight = 'bold';
+lbl1.HorizontalAlignment = 'center';
+
+lbl2 = uilabel(viewerGrid);
+lbl2.Text = "ROI Real";
+lbl2.FontWeight = 'bold';
+lbl2.HorizontalAlignment = 'center';
+
+lbl3 = uilabel(viewerGrid);
+lbl3.Text = "Grad-CAM";
+lbl3.FontWeight = 'bold';
+lbl3.HorizontalAlignment = 'center';
+
+axOriginal = uiaxes(viewerGrid);
+axOriginal.Layout.Row = 2;
+
+axROI = uiaxes(viewerGrid);
+axROI.Layout.Row = 2;
+
+axGradCAM = uiaxes(viewerGrid);
+axGradCAM.Layout.Row = 2;
+
+axOriginal.Toolbar.Visible = 'off';
+axROI.Toolbar.Visible = 'off';
+axGradCAM.Toolbar.Visible = 'off';
+
+%% =====================================================
+% PANEL DERECHO
+%% =====================================================
+
+rightPanel = uipanel(mainGrid);
+
+rightPanel.Title = "Resultados";
+
+rightPanel.Layout.Row = 2;
+rightPanel.Layout.Column = 3;
+
+rightGrid = uigridlayout(rightPanel,[2 1]);
+
+rightGrid.RowHeight = {300,'1x'};
+
+probPanel = uipanel(rightGrid);
+
+probPanel.Title = "Probabilidades";
+
+probAxes = uiaxes(probPanel);
+probAxes.Units = 'normalized';
+probAxes.Position = [0.05 0.08 0.9 0.88];
+
+probAxes.FontSize = 11;
+
+
+axCM.Toolbar.Visible = 'off';
+
+
+%% =====================================================
+% HISTORIAL ENTRENAMIENTO
+%% =====================================================
+
+bottomPanel = uipanel(mainGrid);
+
+bottomPanel.Title = ...
+"Historial de Entrenamiento";
+
+bottomPanel.Layout.Row = 3;
+bottomPanel.Layout.Column = [1 3];
+
+bottomGrid = uigridlayout(bottomPanel,[1 4]);
+
+bottomGrid.ColumnWidth = ...
+{'1x','1x','1x',220};
+
+axTrainAcc = uiaxes(bottomGrid);
+
+title(axTrainAcc,...
+'Accuracy (%)');
+
+axTrainAcc.Toolbar.Visible = 'off';
+
+axTrainLoss = uiaxes(bottomGrid);
+
+title(axTrainLoss,...
+'Loss');
+
+axTrainLoss.Toolbar.Visible = 'off';
+
+axCM = uiaxes(bottomGrid);
+
+title(axCM,...
+'Matriz de Confusión');
+
+axCM.Toolbar.Visible = 'off';
+
+summaryPanel = uipanel(bottomGrid);
+
+summaryPanel.Title = ...
+"Resumen";
+
+summaryGrid = ...
+uigridlayout(summaryPanel,[10 1]);
+
+lblFinalAcc = uilabel(summaryGrid);
+lblFinalLoss = uilabel(summaryGrid);
+lblFinalIter = uilabel(summaryGrid);
+
+lblACCGlobal = uilabel(summaryGrid);
+lblPREGlobal = uilabel(summaryGrid);
+lblRECGlobal = uilabel(summaryGrid);
+lblESPGlobal = uilabel(summaryGrid);
+lblF1Global = uilabel(summaryGrid);
+
+lblFinalAcc.FontSize = 12;
+lblFinalLoss.FontSize = 12;
+lblFinalIter.FontSize = 12;
+
+lblACCGlobal.Text = sprintf( ...
+    'Accuracy: %.2f%%', ...
+    accuracy*100);
+
+lblPREGlobal.Text = sprintf( ...
+    'Precisión: %.2f%%', ...
+    precisionMacro*100);
+
+lblRECGlobal.Text = sprintf( ...
+    'Sensibilidad: %.2f%%', ...
+    recallMacro*100);
+
+lblESPGlobal.Text = sprintf( ...
+    'Especificidad: %.2f%%', ...
+    specificityMacro*100);
+
+lblF1Global.Text = sprintf( ...
+    'F1-Score: %.2f%%', ...
+    f1Macro*100);
+
+app.lblACCGlobal = lblACCGlobal;
+app.lblPREGlobal = lblPREGlobal;
+app.lblRECGlobal = lblRECGlobal;
+app.lblESPGlobal = lblESPGlobal;
+app.lblF1Global = lblF1Global;
+
+
+%% =====================================================
+% DATOS COMPARTIDOS
+%% =====================================================
+
+app.net = net;
+app.classes = classes;
+app.info = info;
+
+app.basePath = basePath;
+
+app.calc_test = calc_test;
+app.dicom_info = dicom_info;
+
+app.axOriginal = axOriginal;
+app.axROI = axROI;
+app.axGradCAM = axGradCAM;
+
+app.statusLbl = statusLbl;
+
+app.axCM = axCM;
+
+app.axTrainAcc = axTrainAcc;
+app.axTrainLoss = axTrainLoss;
+
+app.lblFinalAcc = lblFinalAcc;
+app.lblFinalLoss = lblFinalLoss;
+app.lblFinalIter = lblFinalIter;
+
+app.lblClase = lblClase;
+app.lblConf = lblConf;
+app.lblTiempo = lblTiempo;
+
+app.lblACC = lblACC;
+app.lblPRE = lblPRE;
+app.lblREC = lblREC;
+app.lblESP = lblESP;
+app.lblF1 = lblF1;
+
+app.probAxes = probAxes;
+
+fig.UserData = app;
+    
+
+    %% =====================================================
+    % CALLBACKS
+    %% =====================================================
+    
+    btnCaso.ButtonPushedFcn = ...
+    @(src,event) generarCaso(fig);
+    
+   btnResNet18.ButtonPushedFcn = ...
+    @(src,event)cargarModelo(fig,"resnet18");
+
+    btnResNet50.ButtonPushedFcn = ...
+    @(src,event)cargarModelo(fig,"resnet50");
+
+    btnDenseNet201.ButtonPushedFcn = ...
+    @(src,event)cargarModelo(fig,"densenet201");
+    
+    end
+    
+
+
+    
+    function generarCaso(fig)
+    
+    app = fig.UserData;
+    
+    calc_test = app.calc_test;
+    dicom_info = app.dicom_info;
+    basePath = app.basePath;
+    
+    Ntest = height(calc_test);
+    
+    found = false;
+    
+    while ~found
+    
+    
+    try
+    
+        idxRand = randi(Ntest);
+    
+        imgPathDICOM = ...
+            calc_test.imageFilePath(idxRand);
+    
+        roiPathDICOM = ...
+            calc_test.ROIPath(idxRand);
+    
+        imgID = extractBefore(imgPathDICOM,"/");
+        roiID = extractBefore(roiPathDICOM,"/");
+    
+        rowIMG = ...
+            dicom_info(dicom_info.PatientID==imgID,:);
+    
+        rowROI = ...
+            dicom_info(dicom_info.PatientID==roiID,:);
+    
+        if isempty(rowIMG) || isempty(rowROI)
+            continue
+        end
+    
+        imgPath = fullfile( ...
+            basePath,...
+            "jpeg",...
+            erase(string(rowIMG.image_path(1)),...
+            "CBIS-DDSM/jpeg/"));
+    
+        roiPath = fullfile( ...
+            basePath,...
+            "jpeg",...
+            erase(string(rowROI.image_path(1)),...
+            "CBIS-DDSM/jpeg/"));
+    
+        if ~isfile(imgPath) || ~isfile(roiPath)
+            continue
+        end
+    
+        found = true;
+    
+    catch
+        continue
+    end
+    
+    
+    end
+    
+    %% =====================================================
+    % LEER IMAGEN ORIGINAL
+    %% =====================================================
+    
+    I_original = imread(imgPath);
+    
+    if size(I_original,3)==3
+    I_gray = rgb2gray(I_original);
+    else
+    I_gray = I_original;
+    end
+    
+    I_gray = imresize(I_gray,[224 224]);
+    
+    %% =====================================================
+    % LEER ROI
+    %% =====================================================
+    
+    ROI = imread(roiPath);
+    
+    if size(ROI,3)==3
+    ROI = rgb2gray(ROI);
+    end
+    
+    ROI = imresize(ROI,[224 224]);
+    
+    %% =====================================================
+    % PREPROCESAMIENTO
+    %% =====================================================
+    
+    I_input = preprocessMammoROI( ...
+    imgPath,...
+    roiPath);
+    
+
+    app.currentImage = I_input;
+
+app.currentGray = I_gray;
+app.currentROI = ROI;
+
+fig.UserData = app;
+    
+    %% =====================================================
+    % CLASIFICACIÓN
+    %% =====================================================
+    
+    tic
+    
+    [labelPred,scores] = ...
+    classify(app.net,I_input);
+    
+    tiempoInferencia = toc;
+    
+    [probMax,~] = max(scores);
+    
+    %% =====================================================
+    % GRAD-CAM
+    %% =====================================================
+    
+ switch app.modeloActual
+
+    case "resnet18"
+        featureLayer = "res5b_relu";
+
+    case "resnet50"
+        featureLayer = "res5c_branch2c";
+
+    case "densenet201"
+        featureLayer = "conv5_block32_concat";
+
+end
+    
+    
+    gradcamMap = gradCAM( ...
+    app.net,...
+    I_input,...
+    labelPred,...
+    'FeatureLayer',...
+    featureLayer);
+    
+    gradcamMap = ...
+    imresize(gradcamMap,[224 224]);
+    
+    %% =====================================================
+    % MOSTRAR IMAGEN ORIGINAL
+    %% =====================================================
+    
+    imshow(I_gray,[],...
+    'Parent',app.axOriginal);
+    axis(app.axOriginal,'off')
+axis(app.axROI,'off')
+axis(app.axGradCAM,'off')
+    
+    title(app.axOriginal,...
+    "Mamografía");
+    
+    %% =====================================================
+    % MOSTRAR ROI
+    %% =====================================================
+    
+    imshow(ROI,[],...
+    'Parent',app.axROI);
+    axis(app.axOriginal,'off')
+axis(app.axROI,'off')
+axis(app.axGradCAM,'off')
+    
+    title(app.axROI,...
+    "ROI Real");
+    
+    %% =====================================================
+    % MOSTRAR GRAD-CAM
+    %% =====================================================
+    
+    imshow(I_gray,[],...
+    'Parent',app.axGradCAM);
+    axis(app.axOriginal,'off')
+axis(app.axROI,'off')
+axis(app.axGradCAM,'off')
+    
+    hold(app.axGradCAM,'on')
+    
+    imagesc(app.axGradCAM,...
+    gradcamMap,...
+    'AlphaData',0.5);
+    
+    colormap(app.axGradCAM,jet)
+    
+    hold(app.axGradCAM,'off')
+    
+    title(app.axGradCAM,...
+    "Grad-CAM");
+    
+    %% =====================================================
+    % PROBABILIDADES
+    %% =====================================================
+    
+    cla(app.probAxes)
+    
+    barh(app.probAxes,...
+    scores);
+    
+    app.probAxes.YTick = ...
+    1:numel(app.classes);
+    
+    app.probAxes.YTickLabel = ...
+    app.classes;
+    
+    xlim(app.probAxes,[0 1])
+    
+    title(app.probAxes,...
+    "Probabilidades");
+    
+    %% =====================================================
+    % INFORMACIÓN
+    %% =====================================================
+    
+    app.lblClase.Text = ...
+    "Clase: " + string(labelPred);
+    
+    app.lblConf.Text = ...
+    sprintf( ...
+    "Confianza: %.2f%%",...
+    probMax*100);
+    
+    app.lblTiempo.Text = ...
+    sprintf( ...
+    "Tiempo: %.3f s",...
+    tiempoInferencia);
+    
+    fig.UserData = app;
+    
+    end
+    
+    
+    function I = preprocessMammoROI(imgPath, roiPath)
+    
+    try
+    
+    I = imread(imgPath);
+    
+    if size(I,3)==3
+        I = rgb2gray(I);
+    end
+    
+    I = imresize(I,[224 224]);
+    
+    roi = imread(roiPath);
+    
+    if size(roi,3)==3
+        roi = rgb2gray(roi);
+    end
+    
+    roi = imresize(roi,[224 224]);
+    
+    roi = roi > 0;
+    
+    I = im2double(I);
+    
+    I(roi==0) = ...
+        I(roi==0)*0.3;
+    
+    I = adapthisteq(I);
+    
+    I = im2single(I);
+    
+    I = repmat(I,1,1,3);
+    
+    catch
+    
+    I = zeros(224,224,3,'single');
+    
+    
+    end
+    
+    end
+    
+    
+    %evaluar modelo
+    
+   function evaluarModelo(fig)
+
+app = fig.UserData;
+
+%% ==========================================
+% MÉTRICAS GUARDADAS
+%% ==========================================
+
+C = app.C;
+
+accuracy = app.accuracy;
+
+precisionMacro = app.precisionMacro;
+recallMacro = app.recallMacro;
+specificityMacro = app.specificityMacro;
+f1Macro = app.f1Macro;
+
+%% ==========================================
+% MOSTRAR MÉTRICAS
+%% ==========================================
+
+app.lblACC.Text = ...
+sprintf('ACC: %.2f%%',accuracy*100);
+
+app.lblPRE.Text = ...
+sprintf('PRE: %.2f%%',precisionMacro*100);
+
+app.lblREC.Text = ...
+sprintf('REC: %.2f%%',recallMacro*100);
+
+app.lblESP.Text = ...
+sprintf('ESP: %.2f%%',specificityMacro*100);
+
+app.lblF1.Text = ...
+sprintf('F1: %.2f%%',f1Macro*100);
+
+%% ==========================================
+% MATRIZ DE CONFUSIÓN
+%% ==========================================
+
+cla(app.axCM)
+
+imagesc(app.axCM,C)
+
+for i = 1:size(C,1)
+    for j = 1:size(C,2)
+
+        text(app.axCM,...
+            j,...
+            i,...
+            num2str(C(i,j)),...
+            'HorizontalAlignment','center',...
+            'FontWeight','bold',...
+            'Color','w');
+
+    end
+end
+
+
+
+xticklabels(app.axCM,app.classes)
+yticklabels(app.axCM,app.classes)
+
+xtickangle(app.axCM,45)
+
+axis(app.axCM,'square')
+
+axis(app.axCM,'image')
+
+app.axCM.FontSize = 11;
+
+colormap(app.axCM,parula)
+
+colorbar(app.axCM)
+
+numClasses = size(C,1);
+
+xticks(app.axCM,1:numClasses)
+yticks(app.axCM,1:numClasses)
+
+xticklabels(app.axCM,app.classes)
+yticklabels(app.axCM,app.classes)
+
+xtickangle(app.axCM,25)
+
+title(app.axCM,...
+sprintf('Accuracy %.2f%%',accuracy*100));
+
+fig.UserData = app;
+
+end
+
+
+    %mostrar entrenamiento 
+
+   function mostrarEntrenamiento(fig)
+
+app = fig.UserData;
+
+info = app.info;
+
+x = 1:length(info.TrainingLoss);
+
+%% Accuracy
+
+cla(app.axTrainAcc)
+
+plot(app.axTrainAcc,...
+    x,...
+    info.TrainingAccuracy,...
+    'LineWidth',2);
+
+hold(app.axTrainAcc,'on')
+
+idxVal = ~isnan(info.ValidationAccuracy);
+
+plot(app.axTrainAcc,...
+    x(idxVal),...
+    info.ValidationAccuracy(idxVal),...
+    'LineWidth',2);
+
+grid(app.axTrainAcc,'on')
+
+legend(app.axTrainAcc,...
+    {'Training','Validation'},...
+    'Location','best');
+
+title(app.axTrainAcc,...
+    'Accuracy');
+
+xlabel(app.axTrainAcc,...
+    'Iteración');
+
+ylabel(app.axTrainAcc,...
+    'Accuracy (%)');
+
+%% Loss
+
+cla(app.axTrainLoss)
+
+plot(app.axTrainLoss,...
+    x,...
+    info.TrainingLoss,...
+    'LineWidth',2);
+
+hold(app.axTrainLoss,'on')
+
+idxVal = ~isnan(info.ValidationLoss);
+
+plot(app.axTrainLoss,...
+    x(idxVal),...
+    info.ValidationLoss(idxVal),...
+    'LineWidth',2);
+
+grid(app.axTrainLoss,'on')
+
+legend(app.axTrainLoss,...
+    {'Training','Validation'},...
+    'Location','best');
+
+title(app.axTrainLoss,...
+    'Loss');
+
+xlabel(app.axTrainLoss,...
+    'Iteración');
+
+ylabel(app.axTrainLoss,...
+    'Loss');
+
+%% Resumen
+
+app.lblFinalAcc.Text = sprintf(...
+    'Validation Accuracy: %.2f%%',...
+    info.FinalValidationAccuracy);
+
+app.lblFinalLoss.Text = sprintf(...
+    'Validation Loss: %.4f',...
+    info.FinalValidationLoss);
+
+app.lblFinalIter.Text = sprintf(...
+    'Iteración Final: %d',...
+    info.OutputNetworkIteration);
+
+   end
+
+
+
+   %cargar modelo
+
+
+   function cargarModelo(fig,modelo)
+   app = fig.UserData;
+
+switch modelo
+
+    case "resnet18"
+
+        load("modelo_resnet18_roi_mejorado.mat",...
+            "net","classes","info",...
+            "trainIdx","testIdx",...
+            "C","accuracy",...
+            "precisionMacro",...
+            "recallMacro",...
+            "specificityMacro",...
+            "f1Macro");
+
+        nombre = "ResNet18";
+        app.modeloActual = "resnet18";
+   
+
+    case "resnet50"
+
+        load("modelo_resnet50_roi_mejorado.mat",...
+            "net","classes","info",...
+            "trainIdx","testIdx",...
+            "C","accuracy",...
+            "precisionMacro",...
+            "recallMacro",...
+            "specificityMacro",...
+            "f1Macro");
+
+            app.modeloActual = "resnet50";
+
+        nombre = "ResNet50";
+
+    case "densenet201"
+
+        load("modelo_densenet201_roi_mejorado.mat",...
+            "net","classes","info",...
+            "trainIdx","testIdx",...
+            "C","accuracy",...
+            "precisionMacro",...
+            "recallMacro",...
+            "specificityMacro",...
+            "f1Macro");
+
+        app.modeloActual = "densenet201";
+
+        nombre = "DenseNet201";
+
+end
+app.net = net;
+app.classes = classes;
+
+app.info = info;
+
+app.C = C;
+
+app.accuracy = accuracy;
+app.precisionMacro = precisionMacro;
+app.recallMacro = recallMacro;
+app.specificityMacro = specificityMacro;
+app.f1Macro = f1Macro;
+
+
+
+app.statusLbl.Text = ...
+"✓ Modelo " + nombre + " cargado";
+
+fig.UserData = app;
+
+mostrarEntrenamiento(fig);
+
+evaluarModelo(fig);
+
+if isfield(app,'currentImage')
+    actualizarPrediccion(fig);
+end
+   end
+
+
+
+
+   function actualizarPrediccion(fig)
+
+app = fig.UserData;
+
+if ~isfield(app,'currentImage')
+    uialert(fig,...
+        'Primero genere un caso.',...
+        'Sin imagen');
+    return
+end
+
+I_input = app.currentImage;
+
+%% Clasificación
+
+tic
+
+[labelPred,scores] = ...
+    classify(app.net,I_input);
+
+tiempoInferencia = toc;
+
+[probMax,~] = max(scores);
+
+%% Seleccionar capa Grad-CAM
+
+switch lower(app.modeloActual)
+
+    case 'resnet18'
+        featureLayer = "res5b_relu";
+
+    case 'resnet50'
+        featureLayer = "res5c_branch2c";
+
+    case 'densenet201'
+        featureLayer = "conv5_block32_concat";
+
+    otherwise
+        featureLayer = "res5c_branch2c";
+
+end
+
+%% Grad-CAM
+
+gradcamMap = gradCAM( ...
+    app.net,...
+    I_input,...
+    labelPred,...
+    'FeatureLayer',...
+    featureLayer);
+
+gradcamMap = ...
+    imresize(gradcamMap,[224 224]);
+
+%% Mostrar Grad-CAM
+
+imshow(app.currentGray,[],...
+    'Parent',app.axGradCAM);
+
+axis(app.axGradCAM,'off')
+
+hold(app.axGradCAM,'on')
+
+imagesc(app.axGradCAM,...
+    gradcamMap,...
+    'AlphaData',0.5);
+
+colormap(app.axGradCAM,jet)
+
+hold(app.axGradCAM,'off')
+
+title(app.axGradCAM,...
+    "Grad-CAM")
+
+%% Probabilidades
+
+cla(app.probAxes)
+
+barh(app.probAxes,scores)
+
+app.probAxes.YTick = ...
+    1:numel(app.classes);
+
+app.probAxes.YTickLabel = ...
+    cellstr(app.classes);
+
+xlim(app.probAxes,[0 1])
+
+xlabel(app.probAxes,...
+    'Probabilidad')
+
+title(app.probAxes,...
+    'Probabilidades por Clase')
+
+%% Información
+
+app.lblClase.Text = ...
+    "Clase: " + string(labelPred);
+
+app.lblConf.Text = ...
+    sprintf("Confianza: %.2f%%",...
+    probMax*100);
+
+app.lblTiempo.Text = ...
+    sprintf("Tiempo: %.3f s",...
+    tiempoInferencia);
+
+%% Guardar resultados
+
+app.lastPrediction = labelPred;
+app.lastScores = scores;
+app.lastConfidence = probMax;
+app.lastInferenceTime = tiempoInferencia;
+
+fig.UserData = app;
+
+end
